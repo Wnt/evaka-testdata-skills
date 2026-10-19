@@ -51,7 +51,7 @@ holiday_period ── holiday_period_questionnaire ── holiday_questionnaire_
 | CLUB, PRESCHOOL_CLUB | 2-6 | clubs |
 | TEMPORARY_DAYCARE(_PART_DAY) | any | short-term care |
 
-Absence categories per type: `absence_categories(repo, commit)`. Valid service need
+Absence categories per type: `absence_categories(commit)`. Valid service need
 options per type: `get_environment_info` (`validPlacementType`).
 
 ## Unit features

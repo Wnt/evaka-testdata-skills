@@ -20,12 +20,18 @@ error. When eVaka changes, the skill adapts.
 The skill provides:
 - `SKILL.md`: the workflow (plan → shapes → generator script → local check → server
   validation without saving → insert → workflows → verify → report)
-- `scripts/row_types.py`: row shapes, enums and payload checking (catches misspelled fields,
-  which the server silently ignores)
+- `scripts/evaka_source.py`: fetches only the needed eVaka backend files of the deployed commit
+  (sparse, depth 1, ~3 s, cached). No eVaka clone is needed.
+- `scripts/row_types.py`: compact row shapes, enums and payload checking (catches misspelled
+  fields, which the server silently ignores)
+- `scripts/scenario.py`: high-level builders for the common case (unit, groups, staff, families,
+  placements, reservations, absences, attendance, staff shifts). A typical request needs a
+  ~30-60 line script.
 - `scripts/evaka_testdata.py`: a stdlib Python library (time zones, workdays and holidays,
   test SSNs, names, absence categories, lint, upload)
 - `references/`: pitfalls verified against staging, domain model, realism, compatibility
-- `examples/`: a minimal template and a full unit scenario
+- `examples/`: `quick_unit.py` (3 groups, 15 children, staff, two weeks of attendance),
+  `minimal_family.py`, and `full_unit_scenario.py` (a large reference scenario)
 
 ## Requirements
 
@@ -33,31 +39,53 @@ The skill provides:
    (e.g. `https://staging.espoonvarhaiskasvatus.fi/api/mcp`). Authentication is OAuth: the
    agent opens an eVaka login, which you approve as an employee (dynamic client
    registration, so no keys need to be configured).
-2. **A clone of the eVaka repo** in the agent's environment (`git clone
-   https://github.com/espoon-voltti/evaka`), plus `python3` (3.9+), `git` and `curl`.
+2. `python3` (3.9+), `git`, `curl` and network access to github.com. The scripts fetch the
+   eVaka source they need themselves. No eVaka clone is needed.
 
 ## Installation
+
+### Claude Code on the web / claude.ai (recommended for cloud sessions)
+
+Upload the skill once in **claude.ai → Settings → Capabilities → Skills** as a zip of the
+`evaka-test-data` directory. It is then available in every cloud session, with no tokens spent
+and nothing committed to any project. An organization admin can enable it for the whole
+organization. Build the zip:
+
+```sh
+git clone --depth 1 https://github.com/Wnt/evaka-testdata-skills
+(cd evaka-testdata-skills/skills && zip -r ../../evaka-test-data.zip evaka-test-data)
+```
+
+Don't "install" it by attaching the zip in a chat. The agent then spends a turn and tokens
+reviewing and copying it, and usually commits it into the project repository.
+
+To get updates automatically instead, add this to the cloud environment's **setup script**
+(environment settings → Setup script). It runs when a session starts:
+
+```sh
+rm -rf ~/.claude/skills/evaka-test-data && mkdir -p ~/.claude/skills && \
+  git clone -q --depth 1 https://github.com/Wnt/evaka-testdata-skills /tmp/evaka-testdata-skills && \
+  cp -r /tmp/evaka-testdata-skills/skills/evaka-test-data ~/.claude/skills/
+```
+
+### Local tools
 
 Copy (or symlink) the `skills/evaka-test-data` directory to a location your tool scans:
 
 | Tool | Personal (all projects) | Project-specific |
 |---|---|---|
 | Claude Code | `~/.claude/skills/evaka-test-data/` | `.claude/skills/evaka-test-data/` |
-| claude.ai / Claude Code on the web | Settings → Capabilities → Skills → upload a zip of the `evaka-test-data` directory (an organization admin can share it with the whole org) | – |
 | OpenAI Codex | `~/.codex/skills/evaka-test-data/` (or `$CODEX_HOME/skills`) | `.agents/skills/evaka-test-data/` |
 | GitHub Copilot (VS Code, CLI, cloud agent) | `~/.copilot/skills/evaka-test-data/` or `~/.agents/skills/` | `.github/skills/evaka-test-data/` or `.agents/skills/` |
 
-The simplest cross-tool option is `~/.agents/skills/` plus a symlink at the path your tool
-expects. Tool paths change: check them in your tool's documentation.
+The simplest cross-tool option is one clone plus symlinks. Tool paths change: check your
+tool's documentation.
 
 ```sh
 git clone https://github.com/Wnt/evaka-testdata-skills ~/evaka-testdata-skills
-mkdir -p ~/.claude/skills ~/.codex/skills ~/.copilot/skills
 for d in ~/.claude/skills ~/.codex/skills ~/.copilot/skills; do
-  ln -sfn ~/evaka-testdata-skills/skills/evaka-test-data "$d/evaka-test-data"
+  mkdir -p "$d" && ln -sfn ~/evaka-testdata-skills/skills/evaka-test-data "$d/evaka-test-data"
 done
-# zip for claude.ai:
-(cd ~/evaka-testdata-skills/skills && zip -r ~/evaka-test-data.zip evaka-test-data)
 ```
 
 Tools without skill support (e.g. Microsoft 365 Copilot chat): give `SKILL.md` and the

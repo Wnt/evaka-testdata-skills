@@ -15,7 +15,12 @@ row_types.py (it reads the deployed commit), then build rows with `Rows.add(type
     # then: create_upload_url (MCP) -> post_upload(url, "validate.json")
 """
 import json
+import os
 import random
+import sys
+
+sys.dont_write_bytecode = True  # keep the skill directory clean (no __pycache__)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import subprocess
 import uuid
 from datetime import date, datetime, time, timedelta
@@ -160,11 +165,13 @@ def ascii_email(first, last, domain="example.com"):
 
 # ----------------------------------------------------------------------------- domain rules
 
-def absence_categories(repo: str, commit: str = "HEAD") -> dict:
+def absence_categories(commit: str, repo: str = None) -> dict:
     """{placementType: [absenceCategory, ...]} read from PlacementType.absenceCategories() at the
     deployed commit. An absence row is needed for EACH category of the child's placement type
     (that is what eVaka creates when an absence is marked in the UI)."""
     import re
+    from evaka_source import ensure_source
+    repo = ensure_source(commit, repo)
     src = subprocess.run(["git", "-C", repo, "show",
                           f"{commit}:service/src/main/kotlin/evaka/core/placement/PlacementType.kt"],
                          capture_output=True, text=True, check=True).stdout

@@ -48,7 +48,7 @@ Dev inserts write rows directly. Nothing checks that the data makes sense in the
   placement type.
 - one placement per child per day (overlapping placements are accepted but break things).
 - **absences need one row per absence category of the placement type**.
-  `absence_categories(repo, commit)` reads them from `PlacementType.absenceCategories()`
+  `absence_categories(commit)` reads them from `PlacementType.absenceCategories()`
   (e.g. PRESCHOOL_DAYCARE needs BILLABLE and NONBILLABLE).
 - a reservation and an absence on the same day contradict each other. Marking an absence in
   eVaka deletes the reservation, so don't insert both.

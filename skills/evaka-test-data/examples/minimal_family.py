@@ -4,7 +4,7 @@ attendances and a sick leave for the last two weeks. Copy and adapt.
 
 Written against eVaka 6eb51e0b (2026-10). Look up shapes at your appCommit with row_types.py.
 
-  python3 minimal_family.py --repo ~/evaka --commit <appCommit> --today 2026-10-16 \
+  python3 -B minimal_family.py --commit <appCommit> --today 2026-10-16 \
       --unit <unitId> --group <groupId> --service-need-option <id from get_environment_info> \
       --out payload.json [--rollback]
 
@@ -23,7 +23,7 @@ from evaka_testdata import (Rows, uid, hdt, hm, D, T, add_minutes, date_range, t
                             FIRST_NAMES_M, LAST_NAMES, SYSTEM_USER)
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--repo", required=True)
+ap.add_argument("--repo", default=None, help="optional eVaka clone; default: fast sparse cache")
 ap.add_argument("--commit", required=True)
 ap.add_argument("--today", required=True)
 ap.add_argument("--unit", required=True)
@@ -67,7 +67,7 @@ r.add("daycare_group_placement", id=uid(), daycarePlacementId=placement, daycare
 r.add("daily_service_times", id=uid(), childId=kid, type="REGULAR",
       validityPeriod=date_range(start), regularTimes=time_range("08:00", "16:00"))
 
-categories = absence_categories(a.repo, a.commit)["DAYCARE"]
+categories = absence_categories(a.commit, a.repo)["DAYCARE"]
 sick = set(list(workdays(today - timedelta(days=9), today - timedelta(days=8))))
 for d in workdays(today - timedelta(days=13), today + timedelta(days=7)):
     if d in sick:

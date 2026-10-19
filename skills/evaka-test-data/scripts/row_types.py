@@ -5,14 +5,15 @@ at the commit that is deployed (appCommit from get_environment_info).
 The MCP server deserializes each row into a Kotlin class (Dev* fixture classes). This script
 reads those classes straight from git, so it never goes stale.
 
-Usage:
-  python3 row_types.py --repo ~/evaka --commit <appCommit>            # list all row types
-  python3 row_types.py --repo ~/evaka --commit <appCommit> placement absence
-  python3 row_types.py ... --depth 2 child_document                   # also expand nested types
-  python3 row_types.py ... --class DevPerson                          # any Kotlin class/enum
+Usage (the source of <appCommit> is fetched automatically into a sparse cache, ~3 s once):
+  python3 row_types.py --commit <appCommit>                    # list all row types + value formats
+  python3 row_types.py --commit <appCommit> placement absence  # compact shapes: one line per field
+  python3 row_types.py --commit <appCommit> --depth 2 child_document   # expand nested types deeper
+  python3 row_types.py --commit <appCommit> --class DevPerson  # any Kotlin class/enum
+  python3 row_types.py --commit <appCommit> --full placement   # raw Kotlin source
+  python3 row_types.py --commit <appCommit> --check payload.json  # check a payload file
 
-Stdlib only. Needs `git` and a clone of espoon-voltti/evaka that contains the commit
-(run `git fetch origin` first if the commit is missing).
+Stdlib only; needs git. --repo <path> uses an existing eVaka clone instead of the cache.
 """
 import argparse
 import os
@@ -152,10 +153,7 @@ def extract_block(text, name):
                 if depth == 0:
                     break
             k += 1
-        lines = text[start:k + 1].splitlines()
-        if len(lines) > 160:
-            lines = lines[:160] + ["    ... (truncated, read the file for the rest)"]
-        return "\n".join(lines)
+        return text[start:k + 1]
     j = text.find("(", i)
     if j == -1 or text[i:j].strip() not in ("", ) and "<" not in text[i:j]:
         return text[start:text.find("\n", i)]
@@ -180,6 +178,59 @@ def referenced_types(block):
     return {n for n in names if n not in SIMPLE and not n.endswith("Id")}
 
 
+FULL = False
+
+
+def _fmt_fields(fields):
+    parts = []
+    for fname, typ, nullable, default in fields:
+        if default is None:
+            parts.append(f"  {fname}: {typ}" + ("" if nullable else "   [required]"))
+        else:
+            d = re.sub(r"^\w+Id\(UUID\.randomUUID\(\)\)$|^UUID\.randomUUID\(\)$", "<random uuid>", default)
+            d = d.replace("HelsinkiDateTime.now()", "<now>").replace(
+                "AuthenticatedUser.SystemInternalUser.evakaUserId", "<system user>")
+            d = d if len(d) <= 50 else d[:47] + "..."
+            warn = "   (!) test default date, set explicitly" if re.search(r"\d{4}, *\d+, *\d+", default) else ""
+            parts.append(f"  {fname}: {typ} = {d}{warn}")
+    return parts
+
+
+SUBTYPE_RE = r'@JsonTypeName\("(\w+)"\)\s*(?:@\w+\s*)*data class (\w+)'
+
+
+def subtypes_of(name, block, text):
+    """[(discriminator, subclass)] of a polymorphic sealed class: nested ones in its own body,
+    else top-level classes in the same file that extend it."""
+    own = re.findall(SUBTYPE_RE, block)
+    if own:
+        return own
+    return [(d, c) for d, c in re.findall(SUBTYPE_RE, text or "")
+            if re.search(rf"data class {c}\b[\s\S]*?\)\s*:\s*{name}\b", text)]
+
+
+def subtype_block(sub, block, text):
+    return extract_block(block, sub) or extract_block(text, sub)
+
+
+def compact(name, block, text):
+    """One line per field: name: Type [= default] / [required]. Enums on one line."""
+    if block.startswith("enum"):
+        return block
+    if re.search(rf"sealed class {name}\b", block.split("{")[0] if "{" in block else block):
+        subs = subtypes_of(name, block, text)
+        lines = [f"{name}: polymorphic, discriminator field \"type\" ="]
+        for disc, sub in subs:
+            fields = parse_fields(subtype_block(sub, block, text)) or []
+            lines.append(f"  \"{disc}\" ({sub}): " + ", ".join(
+                f + ("" if d is not None or n else "*") for f, _t, n, d in fields))
+        return "\n".join(lines) + "\n  (* = required; run with --class <Subtype> for types)"
+    fields = parse_fields(block)
+    if fields is None:
+        return block
+    return "\n".join([f"{name}"] + _fmt_fields(fields))
+
+
 def describe(repo, commit, name, depth, seen, ctx_path, ctx_text, out):
     if name in seen:
         return
@@ -192,8 +243,14 @@ def describe(repo, commit, name, depth, seen, ctx_path, ctx_text, out):
     if not block:
         out.append(f"// {name}: could not parse in {path}")
         return
-    out.append(f"// {path}\n{block}\n")
-    if depth > 0 and not block.startswith("enum"):
+    if FULL:
+        lines = block.splitlines()
+        if len(lines) > 160:
+            lines = lines[:160] + ["    ... (truncated, read the file for the rest)"]
+        out.append(f"// {path}\n" + "\n".join(lines) + "\n")
+    else:
+        out.append(compact(name, block, text))
+    if depth > 0 and not block.startswith("enum") and (FULL or not re.search(rf"sealed class {name}\b", block)):
         for ref in sorted(referenced_types(block)):
             describe(repo, commit, ref, depth - 1, seen, path, text, out)
 
@@ -234,7 +291,8 @@ def parse_fields(block):
         if not m:
             continue
         typ = " ".join(m.group(2).split())
-        fields.append((rename.group(1) if rename else m.group(1), typ, typ.endswith("?"), m.group(3) is not None))
+        default = " ".join(m.group(3)[1:].split()) if m.group(3) else None
+        fields.append((rename.group(1) if rename else m.group(1), typ, typ.endswith("?"), default))
     return fields
 
 
@@ -257,7 +315,7 @@ class Checker:
             return
         if re.search(rf"sealed class {name}\b", block.split("{")[0] if "{" in block else block):
             # polymorphic: pick the subtype named by the discriminator ("type") via @JsonTypeName
-            subtypes = dict(re.findall(r'@JsonTypeName\("(\w+)"\)\s*(?:@\w+\s*)*data class (\w+)', text))
+            subtypes = dict(subtypes_of(name, block, text))
             disc = obj.get("type")
             if disc is None or not subtypes:
                 return
@@ -265,7 +323,7 @@ class Checker:
                 problems.append(f"{where}: type '{disc}' is not one of {', '.join(subtypes)}")
                 return
             sub = subtypes[disc]
-            sub_block = extract_block(text, sub)
+            sub_block = subtype_block(sub, block, text)
             self.cache[(sub, path)] = (path, text, sub_block)
             obj = {k: v for k, v in obj.items() if k != "type"}
             name, block = sub, sub_block
@@ -316,13 +374,20 @@ class Checker:
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("types", nargs="*", help="row types (e.g. placement) to describe; omit to list all")
-    ap.add_argument("--repo", default=os.environ.get("EVAKA_REPO", "."), help="eVaka git clone (env EVAKA_REPO)")
-    ap.add_argument("--commit", default="HEAD", help="appCommit from get_environment_info")
+    ap.add_argument("--commit", required=True, help="appCommit from get_environment_info (full sha)")
+    ap.add_argument("--repo", default=os.environ.get("EVAKA_REPO"),
+                    help="optional eVaka git repo; default: a fast sparse cache fetched by evaka_source.py")
+    ap.add_argument("--full", action="store_true", help="print the Kotlin source instead of the compact form")
     ap.add_argument("--depth", type=int, default=1, help="how deep to expand referenced classes/enums")
     ap.add_argument("--check", metavar="PAYLOAD_JSON",
                     help="check an insert_rows payload file: unknown/misspelled and missing fields")
     ap.add_argument("--class", dest="classes", action="append", default=[], help="describe any Kotlin class")
     a = ap.parse_args()
+    global FULL
+    FULL = a.full
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from evaka_source import ensure_source
+    a.repo = ensure_source(a.commit, a.repo)
 
     if a.check:
         import json
@@ -358,7 +423,7 @@ def main():
         out.append(f"===== class {c} =====")
         describe(a.repo, a.commit, c, a.depth, seen, None, None, out)
     print("\n".join(out))
-    print("Fields with a default value (`= ...`) may be omitted; all others are required.\n"
+    print("Fields marked [required] must be given; others may be omitted (nullable -> null).\n"
           "Unknown JSON fields are silently IGNORED (Jackson 3): a misspelled field falls back to its default.")
 
 
